@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,6 +58,78 @@ func main() {
 	dg.Identify.Intents |= discordgo.IntentsGuildMessages
 	dg.Identify.Intents |= discordgo.IntentMessageContent
 	dg.Identify.Intents |= discordgo.IntentAutoModerationExecution
+
+	enabled := true
+	rule, err := dg.AutoModerationRuleCreate(GuildID, &discordgo.AutoModerationRule{
+		Name:        "Auto Moderation Testing",
+		EventType:   discordgo.AutoModerationEventMessageSend,
+		TriggerType: discordgo.AutoModerationEventTriggerKeyword,
+		TriggerMetadata: &discordgo.AutoModerationTriggerMetadata{
+			KeywordFilter: []string{"*cat*"},
+			RegexPatterns: []string{"(c|b)at"},
+		},
+
+		Enabled: &enabled,
+		Actions: []discordgo.AutoModerationAction{
+			{Type: discordgo.AutoModerationRuleActionBlockMessage},
+		},
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Successfully created the rule")
+
+	defer dg.AutoModerationRuleDelete(GuildID, rule.ID)
+
+	dg.AddHandlerOnce(func(s *discordgo.Session, e *discordgo.AutoModerationActionExecution) {
+		_, err = dg.AutoModerationRuleEdit(GuildID, rule.ID, &discordgo.AutoModerationRule{
+			TriggerMetadata: &discordgo.AutoModerationTriggerMetadata{
+				KeywordFilter: []string{"cat"},
+			},
+			Actions: []discordgo.AutoModerationAction{
+				{Type: discordgo.AutoModerationRuleActionTimeout, Metadata: &discordgo.AutoModerationActionMetadata{Duration: 60}},
+				{Type: discordgo.AutoModerationRuleActionSendAlertMessage, Metadata: &discordgo.AutoModerationActionMetadata{
+					ChannelID: e.ChannelID,
+				}},
+			},
+		})
+
+		fmt.Println("auto mod rule triggered")
+		if err != nil {
+			dg.AutoModerationRuleDelete(GuildID, rule.ID)
+			panic(err)
+		}
+
+		s.ChannelMessageSend(e.ChannelID, "meow lol",)
+
+		var counter int
+		var counterMutex sync.Mutex
+		dg.AddHandler(func(s *discordgo.Session, e *discordgo.AutoModerationActionExecution) {
+			action := "unknown"
+			switch e.Action.Type {
+			case discordgo.AutoModerationRuleActionBlockMessage:
+				action = "block message"
+			case discordgo.AutoModerationRuleActionSendAlertMessage:
+				action = "send alert message into <#" + e.Action.Metadata.ChannelID + ">"
+			case discordgo.AutoModerationRuleActionTimeout:
+				action = "timeout"
+			}
+
+			counterMutex.Lock()
+			counter++
+			switch counter {
+			case 1:
+				counterMutex.Unlock()
+				s.ChannelMessageSend(e.ChannelID, "Nothing has changed, right? "+
+					"Well, since separate gateway events are fired per each action (current is "+action+"), ",)
+			}
+				dg.Close()
+				dg.AutoModerationRuleDelete(GuildID, rule.ID)
+				os.Exit(0)
+		})
+	})
 
 	err = dg.Open()
 
